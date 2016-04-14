@@ -1,0 +1,193 @@
+(load-relative "../racket/loadtest.rktl")
+
+(Section 'error)
+
+(test #t parameter? current-error-message-adjuster)
+
+(test #f (current-error-message-adjuster) 'i-just-made-up-this-new-mode)
+(err/rt-test ((current-error-message-adjuster) "oops"))
+
+(err/rt-test (error "message")
+             exn:fail?
+             #rx"message")
+(err/rt-test (error "message" 'argument)
+             exn:fail?
+             #rx"message 'argument")
+(err/rt-test (error 'who "message: ~a" "argument")
+             exn:fail?
+             #rx"who: message: argument")
+(err/rt-test (error 'who "message: ~s" "argument")
+             exn:fail?
+             #rx"who: message: \"argument\"")
+(err/rt-test (error 'who "message: ~v" 'argument)
+             exn:fail?
+             #rx"who: message: 'argument")
+
+(define-syntax-rule (test-error-match rx e)
+  (test #t
+        regexp-match?
+        rx
+        (with-handlers ([exn:fail? exn-message])
+          e
+          "no error")))
+
+(let ()
+  (define (adjuster mode)
+    (case mode
+      [(name)
+       (lambda (name realm)
+         (case realm
+           [(racket/primitive)
+            (values
+             (case name
+               [(cons) 'kons]
+               [(vector-ref) 'vector/ref]
+               [(bytes-ref) 'bytes/ref]
+               [(thread-wait) 'wait-thread]
+               [(regexp-match) 'rx-match]
+               [(read-char) 'read/char]
+               [else name])
+             'mars)]
+           [else (values name realm)]))]
+      [else #f]))
+  (define (mangle-adjuster mode)
+    (case mode
+      [(name) (lambda (name realm)
+                ;; mangle
+                (values (string->symbol (format "!!~a" name))
+                        (string->symbol (format "~a!!" realm))))]
+      [else #f]))
+  (define (unmangle-adjuster mode)
+    (case mode
+      [(name) (lambda (name realm)
+                ;; unmagle
+                (values (string->symbol (substring (format "~a" name) 2))
+                        (let ([s (format "~a" realm)])
+                          (string->symbol (substring s 0 (- (string-length s) 2))))))]
+      [else #f]))
+  (define (check)
+    (test-error-match #rx"^kons" (cons 1))
+    (test-error-match #rx"^vector/ref" (vector-ref 1 2))
+    (test-error-match #rx"^vector/ref" (vector-ref '#(1) 2))
+    (test-error-match #rx"^bytes/ref" (bytes-ref 1 2))
+    (test-error-match #rx"^bytes/ref" (bytes-ref #"1" 2))
+    (test-error-match #rx"^bytes/ref" (bytes-ref 1))
+    (test-error-match #rx"^wait-thread" (thread-wait "not a thread"))
+    (test-error-match #rx"^rx-match" (regexp-match 10))
+    (test-error-match #rx"^read/char" (read-char (open-output-bytes)))
+    (test-error-match #rx"^read/char" (let ([p (open-input-bytes #"")])
+                                        (close-input-port p)
+                                        (read-char p)))
+    
+    (test-error-match #rx"^cons" (raise-argument-error 'cons "string?" 17))
+    (test-error-match #rx"^cons" (raise-result-error 'cons "string?" 17))
+    (test-error-match #rx"^cons" (raise-arity-error 'cons 1 'a 'b))
+    (test-error-match #rx"^cons" (raise-arity-mask-error 'cons 2 'a 'b))
+    (test-error-match #rx"^cons" (raise-range-error 'cons "pair" "" 3 '(1 . 2) 0 1))
+    (test-error-match #rx"^cons" (raise-range-error 'cons "pair" "" 3 '(1 . 2) 0 1 0))
+    (test-error-match #rx"^cons" (let ([cons (lambda (x) x)])
+                                   (cons 1 2)))
+    (test-error-match #rx"^cons: expect" (raise-type-error 'cons "something" 5))
+    
+    (test-error-match #rx"^kons" (raise-argument-error* 'cons 'racket/primitive "string?" 17))
+    (test-error-match #rx"^kons" (raise-result-error* 'cons 'racket/primitive "string?" 17))
+    (test-error-match #rx"^kons" (raise-arity-error* 'cons 'racket/primitive 1 'a 'b))
+    (test-error-match #rx"^kons" (raise-arity-mask-error* 'cons 'racket/primitive 2 'a 'b))
+    (test-error-match #rx"^kons" (raise-range-error* 'cons 'racket/primitive "pair" "" 3 '(1 . 2) 0 1))
+    (test-error-match #rx"^kons" (raise-range-error* 'cons 'racket/primitive "pair" "" 3 '(1 . 2) 0 1 0)))
+  (parameterize ([current-error-message-adjuster adjuster])
+    (check))
+  (with-continuation-mark
+   error-message-adjuster-key
+   adjuster
+   (begin
+     (check)
+     (void)))
+  (parameterize ([current-error-message-adjuster adjuster])
+    (with-continuation-mark
+     error-message-adjuster-key
+     unmangle-adjuster
+     (begin
+       (with-continuation-mark
+        error-message-adjuster-key
+        mangle-adjuster
+        (check))
+       (void)))))
+
+(parameterize ([current-error-message-adjuster
+                (lambda (mode)
+                  (case mode
+                    [(message)
+                     (lambda (who who-realm str str-realm)
+                       (if (eq? str-realm 'racket/primitive)
+                           (values #f 'mars (format "~a>> ~a" who str) 'mars)
+                           (values who who-realm str str-realm)))]
+                    [else #f]))])
+  (test-error-match #rx"^cons>> arity mismatch" (cons 1))
+  (test-error-match #rx"^f>> arity mismatch" (let ([f (lambda (x y) x)])
+                                               (f 1)))
+  (test-error-match #rx"^vector-ref>> index is out of range" (vector-ref '#(1 2 3) 10))
+  (test-error-match #rx"^vector[*]-ref>> index is out of range" (vector*-ref '#(1 2 3) 10))
+  (test-error-match #rx"^f: arity mismatch" (error 'f "arity mismatch")))
+
+(parameterize ([current-error-message-adjuster
+                (lambda (mode)
+                  (case mode
+                    [(contract)
+                     (lambda (ctc realm)
+                       (values (case (and (eq? realm 'racket/primitive)
+                                          ctc)
+                                 [("number?") "number/c"]
+                                 [("exact-nonnegative-integer?") "nonneg-int/c"]
+                                 [("(integer-in 0 (sub1 (expt 2 (stencil-vector-mask-width))))")
+                                  "valid-stencil-vector-mask/c"]
+                                 [else ctc])
+                               'mars))]
+                    [else #f]))])
+  (test-error-match #rx"expected: number/c" (+ 'a 'b))
+  (test-error-match #rx"expected: number[?]" (raise-argument-error 'plus "number?" 'a))
+
+  (test-error-match #rx"expected: nonneg-int/c"
+                    (vector-ref #(1 2 3) 'not-nonneg-int))
+  (test-error-match #rx"expected: nonneg-int/c"
+                    (vector-set! (make-vector 3) 'not-nonneg-int 0))
+  (test-error-match #rx"expected: exact-nonngative-integer[?]"
+                    (raise-argument-error 'vector-add "exact-nonngative-integer?" 'not-nonneg-int))
+
+  (test-error-match #rx"expected: valid-stencil-vector-mask/c"
+                    (stencil-vector 'invalid))
+  (test-error-match #rx"expected: valid-stencil-vector-mask/c"
+                    (stencil-vector-update (stencil-vector 0) 'invalid 0))
+  (test-error-match #rx"expected: valid-stencil-vector-mask/c"
+                    (stencil-vector-update (stencil-vector 0) 0 'invalid))
+  (test-error-match #rx"expected:.+integer-in 0.+sub1.+expt 2.+stencil-vector-mask-width"
+                    (raise-argument-error 'stencil-vector-add
+                                          "(integer-in 0 (sub1 (expt 2 (stencil-vector-mask-width))))"
+                                          'invalid)))
+
+(parameterize ([current-error-message-adjuster
+                (lambda (mode)
+                  (case mode
+                    [(message)
+                     (lambda (who who-realm str str-realm)
+                       (if (and (eq? who 'application)
+                                (eq? str-realm 'racket/primitive))
+                           (values '|function call| 'mars
+                                   "bad call" 'mars)
+                           (values who who-realm str str-realm)))]
+                    [else #f]))])
+  (test-error-match #rx"^function call: bad call" (1 2))
+  (test-error-match #rx"^function call: bad call" (1 #:x 2)))
+
+(err/rt-test (exn-classify-errno (cons 0.5 'posix)))
+(err/rt-test (exn-classify-errno (cons 1 'x)))
+(test 'ENOENT
+      (let ([exn (with-handlers ([void values])
+                   (open-input-file "surely-this-file-does-not-exist"))])
+        (and (exn:fail:filesystem:errno? exn)
+             (exn-classify-errno (exn:fail:filesystem:errno-errno exn)))))
+(test #f (exn-classify-errno (cons (expt 2 100) 'posix)))
+(test #f (exn-classify-errno (cons (expt 2 100) 'windows)))
+(test #f (exn-classify-errno (cons (expt 2 100) 'gai)))
+
+(report-errs)

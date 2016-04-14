@@ -1,0 +1,64 @@
+# `configure` adds some variables before this line, and
+# the rest dispatch to "build.zuo" to build
+
+ZUO=bin/zuo
+
+# A few variables have traditionally been supported as environment
+# variables, so propagate uses (without definitions) here:
+BUILD_VARS = MAKE="$(MAKE)"
+INSTALL_VARS_FROM_ENV = $(BUILD_VARS) \
+                        DESTDIR="$(DESTDIR)" \
+                        PLT_SETUP_OPTIONS="$(PLT_SETUP_OPTIONS)"
+
+RUN_ZUO = + $(ZUO) .
+
+all: $(ZUO)
+	$(RUN_ZUO) all $(BUILD_VARS)
+
+install: $(ZUO)
+	$(RUN_ZUO) install $(INSTALL_VARS_FROM_ENV)
+
+plain-install: $(ZUO)
+	$(RUN_ZUO) plain-install $(INSTALL_VARS_FROM_ENV)
+
+.PHONY: cs
+cs: $(ZUO)
+	$(RUN_ZUO) cs $(BUILD_VARS)
+
+install-cs: $(ZUO)
+	$(RUN_ZUO) install-cs $(INSTALL_VARS_FROM_ENV)
+
+plain-install-cs: $(ZUO)
+	$(RUN_ZUO) plain-install-cs $(INSTALL_VARS_FROM_ENV)
+
+.PHONY: bc
+bc: $(ZUO)
+	$(RUN_ZUO) bc $(BUILD_VARS)
+
+install-bc: $(ZUO)
+	$(RUN_ZUO) install-bc $(INSTALL_VARS_FROM_ENV)
+
+plain-install-bc: $(ZUO)
+	$(RUN_ZUO) plain-install-bc $(INSTALL_VARS_FROM_ENV)
+
+3m: $(ZUO)
+	$(RUN_ZUO) 3m $(BUILD_VARS)
+
+install-3m: $(ZUO)
+	$(RUN_ZUO) install-3m $(INSTALL_VARS_FROM_ENV)
+
+plain-install-3m: $(ZUO)
+	$(RUN_ZUO) plain-install-3m $(INSTALL_VARS_FROM_ENV)
+
+cgc: $(ZUO)
+	$(RUN_ZUO) cgc $(BUILD_VARS)
+
+install-cgc: $(ZUO)
+	$(RUN_ZUO) install-cgc $(INSTALL_VARS_FROM_ENV)
+
+plain-install-cgc: $(ZUO)
+	$(RUN_ZUO) plain-install-cgc $(INSTALL_VARS_FROM_ENV)
+
+$(ZUO):
+	mkdir -p bin
+	$(CC_FOR_BUILD) -DZUO_LIB_PATH='"'"$(upsrcdir)/zuo/lib"'"' -o $(ZUO) $(srcdir)/zuo/zuo.c

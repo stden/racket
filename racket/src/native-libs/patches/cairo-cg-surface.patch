@@ -1,0 +1,91 @@
+diff -u -r old/cairo-1.18.2/src/cairo-quartz-surface.c new/cairo-1.18.2/src/cairo-quartz-surface.c
+--- old/cairo-1.18.2/src/cairo-quartz-surface.c	2024-09-01 07:09:23
++++ new/cairo-1.18.2/src/cairo-quartz-surface.c	2025-02-11 06:37:07
+@@ -48,6 +48,11 @@
+ #include "cairo-surface-backend-private.h"
+ #include "cairo-surface-clipper-private.h"
+ #include "cairo-recording-surface-private.h"
++#include "cairo-default-context-private.h"
++#include "cairo-gstate-private.h"
++#include "cairo-backend-private.h"
++#include "cairo-clip-inline.h"
++#include "cairo-private.h"
+ 
+ #include <dlfcn.h>
+ 
+@@ -2358,6 +2363,58 @@
+     }
+ 
+     return NULL;
++}
++
++CGContextRef
++cairo_quartz_get_cg_context_with_clip (cairo_t *cr)
++{
++
++    cairo_surface_t *surface = cr->backend->get_original_target (cr);
++    cairo_clip_t *clip = _cairo_gstate_get_clip(((cairo_default_context_t *)cr)->gstate);
++    cairo_status_t status;
++
++    cairo_quartz_surface_t *quartz = (cairo_quartz_surface_t*)surface;
++
++    if (cairo_surface_get_type(surface) != CAIRO_SURFACE_TYPE_QUARTZ)
++	return NULL;
++
++    if (clip) {
++	if (_cairo_clip_is_all_clipped(clip)) {
++	    /* Save the state before we set an empty clip rect so that
++	     * our previous clip will be restored */
++	    CGContextSaveGState (quartz->cgContext);
++
++	    /* _cairo_surface_clipper_set_clip doesn't deal with
++	     * clip->all_clipped because drawing is normally discarded earlier */
++	    CGRect empty = {{0,0}, {0,0}};
++	    CGContextClipToRect (quartz->cgContext, empty);
++
++	    return quartz->cgContext;
++	}
++    }
++
++    status = _cairo_surface_clipper_set_clip (&quartz->clipper, clip);
++
++    /* Save the state after we set the clip so that it persists
++     * after we restore */
++    CGContextSaveGState (quartz->cgContext);
++
++    if (unlikely (status))
++	return NULL;
++
++    return quartz->cgContext;
++}
++
++void
++cairo_quartz_finish_cg_context_with_clip (cairo_t *cr)
++{
++    cairo_surface_t *surface = cr->backend->get_original_target (cr);
++    cairo_quartz_surface_t *quartz = (cairo_quartz_surface_t*)surface;
++
++    if (cairo_surface_get_type(surface) != CAIRO_SURFACE_TYPE_QUARTZ)
++	return;
++
++    CGContextRestoreGState (quartz->cgContext);
+ }
+ 
+ /**
+Only in new/cairo-1.18.2/src: cairo-quartz-surface.c.orig
+diff -u -r old/cairo-1.18.2/src/cairo-quartz.h new/cairo-1.18.2/src/cairo-quartz.h
+--- old/cairo-1.18.2/src/cairo-quartz.h	2024-09-01 07:09:23
++++ new/cairo-1.18.2/src/cairo-quartz.h	2025-02-11 06:37:32
+@@ -57,6 +57,12 @@
+ cairo_public CGContextRef
+ cairo_quartz_surface_get_cg_context (cairo_surface_t *surface);
+ 
++cairo_public CGContextRef
++cairo_quartz_get_cg_context_with_clip (cairo_t *cr);
++
++cairo_public void
++cairo_quartz_finish_cg_context_with_clip (cairo_t *cr);
++  
+ #if CAIRO_HAS_QUARTZ_FONT
+ 
+ /*

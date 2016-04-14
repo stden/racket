@@ -1,0 +1,209 @@
+#lang racket/base
+(require racket/match
+         setup/link
+         racket/file
+         racket/set
+         racket/list
+         racket/format
+         "../path.rkt"
+         "pkg-db.rkt"
+         "collects.rkt"
+         "params.rkt"
+         "print.rkt"
+         "get-info.rkt"
+         "trash.rkt"
+	 "rename-dir.rkt")
+
+(provide remove-package
+         pkg-remove)
+
+(define (demote-packages quiet? dry-run? pkg-names)
+  (define db (read-pkg-db))
+  (for ([pkg-name (in-list pkg-names)])
+    (define pi (package-info pkg-name #:db db))
+    (unless (pkg-info-auto? pi)
+      (unless quiet?
+        (printf/flush "Demoting ~a to auto-installed~a\n"
+                      pkg-name 
+                      (dry-run-explain dry-run?)))
+      (unless dry-run?
+        (update-pkg-db! pkg-name (update-auto pi #t))))))
+
+(define ((remove-package for-install? quiet? use-trash? dry-run?) pkg-name)
+  (unless quiet?
+    (printf/flush "~a ~a~a\n"
+                  (if for-install?
+                      "Uninstalling to prepare re-install of"
+                      "Uninstalling")
+                  pkg-name
+                  (dry-run-explain dry-run?)))
+  (define db (read-pkg-db))
+  (define pi (package-info pkg-name #:db db))
+  (match-define (pkg-info orig-pkg checksum _) pi)
+  (define pkg-dir (pkg-directory* pkg-name #:db db))
+  (unless dry-run?
+    (remove-from-pkg-db! pkg-name))
+  (define scope (current-pkg-scope))
+  (define user? (not (or (eq? scope 'installation)
+                         (path? scope))))
+  (unless dry-run?
+    (match orig-pkg
+      [`(,(or 'link 'static-link 'clone) ,_ . ,_)
+       (links pkg-dir
+              #:remove? #t
+              #:user? user?
+              #:file (scope->links-file scope)
+              #:root? (not (sc-pkg-info? pi)))]
+      [_
+       (links pkg-dir
+              #:remove? #t
+              #:user? user?
+              #:file (scope->links-file scope)
+              #:root? (not (sc-pkg-info? pi)))
+       (cond
+        [(and use-trash?
+              (select-trash-dest pkg-name))
+         => (lambda (trash-dest)
+              (printf/flush "Moving ~a to trash: ~a\n" pkg-name trash-dest)
+              (rename-directory pkg-dir trash-dest))]
+        [else
+         (delete-directory/files pkg-dir)])])))
+      
+
+(define (pkg-remove given-pkgs
+                    #:demote? [demote? #f]
+                    #:force? [force? #f]
+                    #:auto? [auto? #f]
+                    #:quiet? [quiet? #f]
+                    #:use-trash? [use-trash? #f]
+                    #:dry-run? [dry-run? #f]
+                    #:from-command-line? [from-command-line? #f])
+  (define db (read-pkg-db))
+  (define all-pkgs
+    (hash-keys db))
+  (define all-pkgs-set
+    (list->set all-pkgs))
+  (define metadata-ns (make-metadata-namespace))
+  ;; The list of input packages, without duplication
+  (define in-pkgs (remove-duplicates given-pkgs))
+
+  ;; Check that all packages are installed, so we don't remove half of
+  ;; them and leave things in an potentialy inconsistent state:
+  (for ([pkg (in-list in-pkgs)])
+    (unless (set-member? all-pkgs pkg)
+      (pkg-not-installed pkg db)))
+
+  (define auto-dep-pkgs
+    (if (or auto? from-command-line?)
+        ;; compute fixpoint:
+        (let ([init-drop (set-union
+                          (list->set
+                           (filter
+                            (λ (p) (pkg-info-auto? (hash-ref db p)))
+                            all-pkgs))
+                          (list->set in-pkgs))])
+          (let loop ([drop init-drop]
+                     [keep (set-subtract
+                            (list->set all-pkgs)
+                            init-drop)])
+            (define deps
+              (list->set
+               (append-map (package-dependencies metadata-ns db #t)
+                           (set->list keep))))
+            (define still-drop (set-subtract drop deps))
+            (define delta (set-subtract drop still-drop))
+            (if (set-empty? delta)
+                (set->list drop)
+                (loop still-drop
+                      (set-union keep delta)))))
+        null))
+
+  (define remove-pkgs
+    (if auto?
+        auto-dep-pkgs
+        ;; just given pkgs:
+        (if demote?
+            null
+            in-pkgs)))
+  (define setup-collects
+    (get-setup-collects remove-pkgs
+                        db
+                        metadata-ns))
+  (unless (or force? demote?)
+    ;; Check dependencies on `in-pkgs' (not `pkgs', which has already
+    ;; been filtered to remove package with dependencies if `auto?' is
+    ;; true).
+    (define pkgs-set (list->set in-pkgs))
+    (define remaining-pkg-db-set
+      (set-subtract all-pkgs-set
+                    (if auto?
+                        (list->set remove-pkgs)
+                        pkgs-set)))
+    (define deps-to-be-removed
+      (set-intersect
+       pkgs-set
+       (list->set
+        (append-map (package-dependencies metadata-ns db #t)
+                    (set->list
+                     remaining-pkg-db-set)))))    
+    (unless (set-empty? deps-to-be-removed)
+      (pkg-error (~a "cannot remove packages that are dependencies of other packages\n"
+                     "  dependencies:~a")
+                 (format-list 
+                  (map
+                   (λ (p)
+                     (define ds
+                       (filter (λ (dp)
+                                 (member p ((package-dependencies metadata-ns db #t) dp)))
+                               (set->list
+                                remaining-pkg-db-set)))
+                     (~a p " (required by: " ds ")"))
+                   (set->list deps-to-be-removed))))))
+
+  (when demote?
+    ;; Demote any package that is not going to be removed:
+    (demote-packages
+     quiet?
+     dry-run?
+     (set->list (set-subtract (list->set in-pkgs)
+                              (list->set remove-pkgs)))))
+
+  (for-each (remove-package #f quiet? use-trash? dry-run?)
+            remove-pkgs)
+
+  (when (and (not auto?)
+             from-command-line?
+             (not quiet?)
+             (not dry-run?))
+    (define unused-pkgs
+      (sort (set->list (set-subtract (list->set auto-dep-pkgs)
+                                     (list->set remove-pkgs)))
+            string<?))
+    (unless (null? unused-pkgs)
+      (printf "The following packages were automatically installed and are no longer used:\n ")
+      (let print-loop ([pos 1] [unused-pkgs unused-pkgs])
+        (when (pair? unused-pkgs)
+          (printf " ~a" (car unused-pkgs))
+          (define next-pos
+            (+ pos (string-length (car unused-pkgs))))
+          (cond
+            [(and (> next-pos 60) (pair? (cdr unused-pkgs)))
+             (printf "\n ")
+             (print-loop 1 (cdr unused-pkgs))]
+            [else
+             (print-loop next-pos (cdr unused-pkgs))])))
+      (printf/flush "\nUse `raco pkg uninstall --auto` to remove them.\n")))
+
+  (cond
+   [(or (null? remove-pkgs) demote? dry-run?)
+    ;; Did nothing, so no setup:
+    'skip]
+   [else
+    ;; setup only collections that still exist:
+    (and setup-collects
+         (for/list ([c (in-list setup-collects)]
+                    #:when (apply collection-path
+                                  (if (path-string? c) (list c) c)
+                                  #:fail (lambda (s) #f)))
+           c))]))
+

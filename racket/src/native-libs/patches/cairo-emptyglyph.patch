@@ -1,0 +1,46 @@
+diff -u -r old/cairo-1.18.2/src/cairo-quartz-font.c new/cairo-1.18.2/src/cairo-quartz-font.c
+--- old/cairo-1.18.2/src/cairo-quartz-font.c	2024-09-01 07:09:23
++++ new/cairo-1.18.2/src/cairo-quartz-font.c	2025-08-12 15:45:26
+@@ -507,6 +507,7 @@
+     CGAffineTransform textMatrix;
+     CGPathRef glyphPath;
+     cairo_path_fixed_t *path;
++    int empty_path;
+ 
+     if (unlikely (glyph == CGGLYPH_INVALID)) {
+ 	_cairo_scaled_glyph_set_path (scaled_glyph, &font->base, _cairo_path_fixed_create());
+@@ -522,18 +523,30 @@
+ 
+     glyphPath = CTFontCreatePathForGlyph (font->ctFont, glyph, &textMatrix);
+ 
+-    if (!glyphPath)
++    empty_path = 0;
++    if (!glyphPath) {
++	/* an empty glyph path may just reflect whitespace; check bounding rects */
++	CGRect r;
++	r = CTFontGetBoundingRectsForGlyphs(font->ctFont, kCTFontHorizontalOrientation, &glyph, NULL, 1);
++	if (memcmp(&CGRectNull, &r, sizeof(CGRect)))
++	    empty_path = 1;
++    }
++
++    if (!glyphPath && !empty_path)
+ 	return CAIRO_INT_STATUS_UNSUPPORTED;
+ 
+     path = _cairo_path_fixed_create ();
+     if (!path) {
+-	CGPathRelease (glyphPath);
++	if (glyphPath)
++	    CGPathRelease (glyphPath);
+ 	return _cairo_error(CAIRO_STATUS_NO_MEMORY);
+     }
+ 
+-    CGPathApply (glyphPath, path, _cairo_quartz_path_apply_func);
++    if (glyphPath)
++	CGPathApply (glyphPath, path, _cairo_quartz_path_apply_func);
+ 
+-    CGPathRelease (glyphPath);
++    if (glyphPath)
++	CGPathRelease (glyphPath);
+ 
+     _cairo_scaled_glyph_set_path (scaled_glyph, &font->base, path);
+ 

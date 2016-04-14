@@ -1,0 +1,116 @@
+#lang racket/base
+(require "../common/check.rkt"
+         "../common/class.rkt"
+         "../host/rktio.rkt"
+         "../port/port.rkt"
+         "../port/close.rkt"
+         "../port/input-port.rkt"
+         "../port/output-port.rkt"
+         "../port/lock.rkt"
+         "../port/fd-port.rkt"
+         "../port/file-stream.rkt"
+         "error.rkt")
+
+(provide open-input-output-tcp
+         tcp-port?
+         tcp-abandon-port)
+
+(class tcp-input-port #:extends fd-input-port
+  #:field
+  [abandon? #f]
+  #:override
+  [on-close
+   ;; with lock held, in rktio and rktio-sleep-relevant mode, and with custodian lock
+   (lambda ()
+     (unless abandon?
+       (rktio_socket_shutdown rktio fd RKTIO_SHUTDOWN_READ)))]
+  [raise-read-error
+   (lambda (n)
+     (raise-network-error #f n "error reading from stream port"))]
+  #:property
+  [prop:file-stream #f]
+  [prop:fd-place-message-opener (lambda (fd name)
+                                  (make-tcp-input-port fd name))])
+
+;; with custodian lock
+(define (make-tcp-input-port fd name
+                             #:custodian [custodian (current-custodian)]
+                             #:fd-refcount [fd-refcount (box 1)])
+  (finish-fd-input-port
+   (new tcp-input-port
+        #:field
+        [name name]
+        [fd fd]
+        [fd-refcount fd-refcount])
+   #:custodian custodian))
+
+(class tcp-output-port #:extends fd-output-port
+  #:field
+  [abandon? #f]
+  #:override
+  [on-close
+   ;; with lock held, in rktio and rktio-sleep-relevant mode, and with custodian lock
+   (lambda ()
+     (unless abandon?
+       (rktio_socket_shutdown rktio fd RKTIO_SHUTDOWN_WRITE)))]
+  [raise-write-error
+   (lambda (n)
+     (raise-network-error #f n "error writing to stream port"))]
+  [buffer-mode
+   ;; with lock held and in atomic mode
+   (case-lambda
+     [() buffer-mode]
+     [(mode)
+      (set! buffer-mode mode)
+      (rktioly
+       (rktio_tcp_nodelay rktio fd (eq? mode 'block)))])]
+  #:property
+  [prop:file-stream #f]
+  [prop:fd-place-message-opener (lambda (fd name)
+                                  (make-tcp-output-port fd name))])
+
+;; in uninterrupted mode or with custodian lock
+(define (make-tcp-output-port fd name
+                              #:custodian [custodian (current-custodian)]
+                              #:fd-refcount [fd-refcount (box 1)])
+  (finish-fd-output-port
+   (new tcp-output-port
+        #:field
+        [name name]
+        [fd fd]
+        [fd-refcount fd-refcount]
+        [buffer-mode 'block])
+   #:custodian custodian
+   #:plumber #f))
+
+;; ----------------------------------------
+
+;; in rktio mode or with custodian lock
+(define (open-input-output-tcp fd name
+                               #:close? [close? #t]
+                               #:custodian [custodian (current-custodian)])
+  (define refcount (box (if close? 2 3)))
+  (values
+   (make-tcp-input-port fd name
+                        #:fd-refcount refcount
+                        #:custodian custodian)
+   (make-tcp-output-port fd name
+                         #:fd-refcount refcount
+                         #:custodian custodian)))
+
+(define/who (tcp-port? p)
+  (define cp (or (->core-input-port p #:default #f)
+                 (->core-output-port p #:default #f)))
+  (or (tcp-input-port? cp)
+      (tcp-output-port? cp)))
+
+(define/who (tcp-abandon-port p)
+  (define cp (or (->core-input-port p #:default #f)
+                 (->core-output-port p #:default #f)))
+  (cond
+    [(tcp-input-port? cp)
+     (set-tcp-input-port-abandon?! cp #t)
+     (close-port p)]
+    [(tcp-output-port? cp)
+     (set-tcp-output-port-abandon?! cp #t)
+     (close-port p)]))
