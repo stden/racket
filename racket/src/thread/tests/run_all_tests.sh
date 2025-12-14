@@ -5,8 +5,23 @@ echo "║           RACKET MULTITHREADING TEST SUITE                   ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 
-RACKET=/srv/racket/racket/bin/racket
-TESTS_DIR=/srv/racket/racket/src/thread/tests
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TESTS_DIR="$SCRIPT_DIR"
+
+# Find racket executable (try common locations)
+# Path from tests/ -> thread/ -> src/ -> racket/ -> bin/racket
+RACKET_RELATIVE="$SCRIPT_DIR/../../../bin/racket"
+
+if [ -x "$RACKET_RELATIVE" ]; then
+    RACKET="$RACKET_RELATIVE"
+elif command -v racket &> /dev/null; then
+    RACKET=racket
+else
+    echo "Error: racket not found. Please add racket to PATH or build Racket first."
+    exit 1
+fi
+
 PASSED=0
 FAILED=0
 
