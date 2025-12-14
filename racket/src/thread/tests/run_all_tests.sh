@@ -54,6 +54,8 @@ run_test "Extended Benchmarks" "extended_benchmarks.rkt"
 run_test "Ultra Benchmarks" "ultra_benchmarks.rkt"
 run_test "Mega Benchmarks" "mega_benchmarks.rkt"
 run_test "Multicore Proof" "multicore_proof.rkt"
+run_test "Vova Lists Test" "vova_lists_test.rkt"
+run_test "3D Engine" "engine3d.rkt"
 run_test "Detailed Profile" "detailed_profile.rkt"
 
 END_TIME=$(date +%s)
